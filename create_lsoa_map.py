@@ -19,7 +19,7 @@ data-set, available from:
     
 https://geoportal.statistics.gov.uk/datasets/b7c49538f0464f748dd7137247bbc41c_0
 
-Version 1.1
+Version 1.2 - Added gradient in new cases each frame
 Created on Sat Sep 26
 
 MIT License
@@ -46,18 +46,18 @@ import matplotlib.pyplot as plt
 import random
 from datetime import datetime, timedelta
 
-print("Covid LSOA dataset file parser   -   version 1.1   -   @jah-photoshop Sept 2020")
+print("Covid LSOA dataset file parser   -   version 1.2   -   @jah-photoshop Sept 2020")
 print("")
 print("This script reads from the LSOA data csv and converts to regional percentage")
 print("statistics, as published on coronavirus.data.gov.uk")
 print("")
 
 #Some parameters that may want to be tweaked...
-debug = False           # Set to True to print extended debug information whilst processing
-size_factor = 10        # The size of the dots.  Bigger number, bigger dots.
+debug = True           # Set to True to print extended debug information whilst processing
+size_factor = 12        # The size of the dots.  Bigger number, bigger dots.
 dot_colour = "#ff0000"  # The RGB colour of the dots.  Red="#ff0000"
-weekly_decay = 0.5      # The factor which dot size reduces each week 
-
+weekly_decay = 0.4      # The factor which dot size reduces each week 
+framerate = 24          # Video FPS (for ffmpeg string)
 
 #Parse a CSV file and read data lines into list
 def read_file(filename):
@@ -135,7 +135,7 @@ data = read_file(lsoa_data_filename)
 if(debug): print("LSOA data loaded, %d lines" % len(data))
 
 #Number of video\still frames to produce for each week of data
-frames_per_week   = int(input("Frames per week [default: 10]                       : ") or "10")
+frames_per_week   = int(input("Frames per week [default: 24]                       : ") or "24")
 
 #Decay rate for existing cases.  Set so size of historical cases halves every week
 decay_rate = math.pow(weekly_decay,1.0/frames_per_week)
@@ -150,7 +150,7 @@ started = False
 historical_outbreaks = []
 
 frame_count = 0
-
+previous_week_count = 0
 #Step through data set one week at a time
 for week in range(number_of_weeks):
     #Title and date strings are displayed on each frame
@@ -163,6 +163,8 @@ for week in range(number_of_weeks):
     
     #Weekly outbreaks stores a list of all the coords + sizes of outbreaks in a week
     weekly_outbreaks = []
+    future_week_count = 0
+    last_week = (week + 1 == number_of_weeks)
     for line in data:
         #Filter out the header line and unidentified LSOAs
         if(line[0]!='lsoa11_cd' and line[0]!='xxxxxxxxx'):
@@ -172,9 +174,56 @@ for week in range(number_of_weeks):
                     xref = lsoa_name.index(line[0])
                     outbreak = [cases,x_coord[xref],y_coord[xref]]
                     weekly_outbreaks.append(outbreak)
+                #Version 1.2 - Added blending between weeks.  Calculate number of weekly outbreaks from previous and next week
+                if not last_week:
+                    f_cases = int(line[week+3])
+                    if f_cases > 2: future_week_count += 1
             except:
                 print("Error on line:%s" % (line))
-    print("Entries in week: %d" % (len(weekly_outbreaks)))  
+
+    week_count = len(weekly_outbreaks)
+    if last_week:
+        future_week_count = week_count
+    print("Entries this week: %d [previous: %d  next: %d]" % (week_count,previous_week_count,future_week_count) )
+    
+    #Version 1.2 - This is where simple linear interpolation based on previous,current and next weeks means is used
+    #Relative values are calculated for each step, then normalised to ensure all cases are added
+    #Should provide a lot smoother graph with less obvious big steps at each week
+    if(week_count > 0):
+        mid_point_rel = 1.0
+        start_point_rel = ((week_count + previous_week_count) / 2.0 ) / week_count
+        end_point_rel = (( (future_week_count - week_count) / 2.0) / week_count) + 1
+        if(debug):print("SPR: %f  EPR: %f" %(start_point_rel,end_point_rel))
+        rel_list = []
+        rmp = int(frames_per_week / 2.0)
+        smp = frames_per_week - rmp 
+        
+        if (rmp > 0): rmp_step = (1 - start_point_rel) / rmp
+        smp_step = (1 - end_point_rel) / smp
+        
+        for i in range(rmp):
+            rel_list.append(start_point_rel + (i * rmp_step))
+        for i in range(smp):
+            rel_list.append(1.0 - (i * smp_step))
+        normalised_rel = [((val / sum(rel_list)) * week_count) for val in rel_list]
+        if(debug):print(normalised_rel)
+
+        added=0
+        t_count=0.0
+        normalised_list = []
+        for i in range(frames_per_week-1):
+            t_count+=normalised_rel[i]
+            int_val = int(t_count)
+            normalised_list.append(int_val - added)
+            added = int_val
+        normalised_list.append(week_count - added)
+           
+#        normalised_list = [round(val) for val in normalised_rel]
+#        normalised_list[frames_per_week-1]=week_count-sum(normalised_list[:-1])
+        if(debug):print("Normalised list [%d]: %s" % (sum(normalised_list),normalised_list))
+    
+    previous_week_count = week_count
+
     #Don't actually start plotting frames until there are outbreaks to show...
     if not started:
         if len(weekly_outbreaks) > 0: started=True
@@ -189,7 +238,8 @@ for week in range(number_of_weeks):
         for frame in range(frames_per_week):
              #A list of the new outbreaks to display in this frame
              frame_outbreaks = []
-             r_tot += len(weekly_outbreaks) / float(frames_per_week)
+             #r_tot += len(weekly_outbreaks) / float(frames_per_week)
+             r_tot += normalised_list[frame]
              while(case_index < int(r_tot)):
                  #print("Case index:%d R_tot:%f W_O_length:%d" % (case_index,r_tot,len(weekly_outbreaks)))
                  af = weekly_outbreaks[case_index]
@@ -265,7 +315,7 @@ for i in range(30):
      nsfn = "frame%04d.png" % (frame_count + i + 1)
      os.system('cp %s %s' % (rfn,merged_path + os.path.sep + nsfn))
 print("Generating video using FFMPEG...")
-ffmpeg_line = "ffmpeg -framerate 12 -pattern_type glob -i '" + merged_path + os.path.sep+ "*.png' -c:v libx264 -r 30 -pix_fmt yuv420p "+output_path+os.path.sep+"out.mp4"
+ffmpeg_line = ("ffmpeg -framerate %d -pattern_type glob -i '" % (framerate)) + merged_path + os.path.sep+ "*.png' -c:v libx264 -r 30 -pix_fmt yuv420p "+output_path+os.path.sep+"out.mp4"
 print(ffmpeg_line)
 os.system(ffmpeg_line)        
 
