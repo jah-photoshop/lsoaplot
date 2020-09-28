@@ -19,6 +19,7 @@ data-set, available from:
     
 https://geoportal.statistics.gov.uk/datasets/b7c49538f0464f748dd7137247bbc41c_0
 
+Version 1.3 - Added daily update, new colours, optional message. Fixed memory leak
 Version 1.2 - Added gradient in new cases each frame
 Created on Sat Sep 26
 
@@ -53,11 +54,20 @@ print("statistics, as published on coronavirus.data.gov.uk")
 print("")
 
 #Some parameters that may want to be tweaked...
-debug = True           # Set to True to print extended debug information whilst processing
-size_factor = 12        # The size of the dots.  Bigger number, bigger dots.
-dot_colour = "#ff0000"  # The RGB colour of the dots.  Red="#ff0000"
-weekly_decay = 0.4      # The factor which dot size reduces each week 
+debug = False            # Set to True to print extended debug information whilst processing
+daily_update = True      # Set to true to update calendar on a daily not weekly basis [NB actual outbreaks will be +- a week from date shown!]
+size_factor = 15         # The size of the dots.  Bigger number, bigger dots.
+dot_out_colour = "#ffaa00"  # The RGB colour of the new outbreak dots.         Bright Red="#ff0000"
+dot_new_colour = "#ee6600"  # The RGB colour of the new outbreak dots.         Bright Red="#ff0000"
+dot_his_colour = "#dd5500"  # The RGB colour of the historical outbreak dots.  Deeper Red="#dd0000"
+weekly_decay = 0.5      # The factor which dot size reduces each week 
 framerate = 24          # Video FPS (for ffmpeg string)
+edgewidth = 2.5           # The width of the stroke (outside of dot) for new cases in pixels
+
+
+
+f=plt.figure(figsize=(12,14),dpi=113.72,frameon=False) 
+
 
 #Parse a CSV file and read data lines into list
 def read_file(filename):
@@ -157,6 +167,7 @@ for week in range(number_of_weeks):
     title_string = "Week %d" % (week+5)
     s_date = datetime(2020,2,4)
     s_date += timedelta(days = (7 * week))
+
     date_string = s_date.strftime("%B %d") #Format date to [Month Day] eg September 22
     
     print("Processing %s [%d of %d]" % (data[0][week+2],week+1,number_of_weeks))
@@ -263,31 +274,42 @@ for week in range(number_of_weeks):
              print("Frame %d: New entries %d  Historical entries %d" % (frame_count,len(frame_outbreaks),len(historical_outbreaks)))
              #Generate plot
              #plt.figure(figsize=(11,14),frameon=False)
-             plt.figure(figsize=(12,14),dpi=113.72,frameon=False) 
+             #f=plt.figure(figsize=(12,14),dpi=113.72,frameon=False) 
              plt.axis([133000,658000,10600,655000])
              plt.text(550000,595000,title_string, horizontalalignment='center',fontsize=26)
+             #Version 1.3: Added optional daily update to date string
+             if(daily_update):
+                 s_date = datetime(2020,2,4)
+                 s_date += timedelta(days = ((7 * (week - 1)) + int( (7.0 * frame) / frames_per_week)))
+                 date_string = s_date.strftime("%B %d") #Format date to [Month Day] eg September 22
              plt.text(550000,576000,date_string, horizontalalignment='center', style='italic',fontsize=15)
              #Plot historical outbreaks first
              x_h = []
              y_h = []
              s_h = []
-             #Subdivide historical entries into 14 different lists based on age.  Each plotted in successively lower alpha
-             for i in range(14):
+             #Subdivide historical entries into [frames_per_week * 2] different lists based on age.  Each plotted in successively lower alpha
+             lim = frames_per_week * 2
+             for i in range(lim):
                  x_h.append([])
                  y_h.append([])
                  s_h.append([])
              for entry in historical_outbreaks:
-                 a_hs = entry[3] * 7
+                 a_hs = entry[3] * frames_per_week
                  a_hi = int(a_hs)
-                 if(a_hi > 13): a_hi=13
+                 if(a_hi > (lim-1)): a_hi=lim-1
                  x_h[a_hi].append(entry[1])
                  y_h[a_hi].append(entry[2])
                  s_h[a_hi].append(entry[0] * size_factor)
-             for i in range(14):
+             for j in range(lim):
+                 #Reverse order so oldest outbreaks are drawn first
+                 i = lim - (j + 1)
                  #Alpha value (transparency) 
-                 a_val = 1.0 - ( (i + 1) / 15.0 ) #Alpha ranges from 0.93 to 0.06 over 2 week period
-                 if(len(x_h[i])>0): plt.scatter(x_h[i],y_h[i],s=s_h[i],c=dot_colour,alpha=a_val )
-             #Now plot current outbreaks
+                 a_val = 1.0 - ( (i + 1) / float(lim+1) ) #Alpha ranges from eg 0.93 to 0.06 over 2 week period
+                 s_a_val = a_val * a_val
+                 if(len(x_h[i])>0): 
+                     #print("%d:%f" % (i,s_a_val) )
+                     plt.scatter(x_h[i],y_h[i],s=s_h[i],c=dot_his_colour,alpha=s_a_val )
+             #Now plot current outbdot_new_colour = "#ff0000"  # The RGB colour of the new outbreak dots.         Bright Red="#ff0000"
              x_c = []
              y_c = []
              s_c = []
@@ -295,7 +317,7 @@ for week in range(number_of_weeks):
                  x_c.append(entry[1])
                  y_c.append(entry[2])
                  s_c.append(entry[0] * size_factor)
-             plt.scatter(x_c,y_c,s=s_c,c=dot_colour)
+             plt.scatter(x_c,y_c,s=s_c,c=dot_new_colour,edgecolors=dot_out_colour,linewidths=edgewidth)
              #plt.scatter(x_coord,y_coord,s=3,c="#0044ff")
              plt.axis('off')
              #Create filenames
@@ -308,10 +330,13 @@ for week in range(number_of_weeks):
              historical_outbreaks.extend(frame_outbreaks)
              #Call convert (from imagemagick package) to create composite of background and new image
              os.system('convert %s %s -composite +antialias %s' % (background_filename,ofn,rfn))
-             plt.close()
-#Create a load of duplicate frames at the end of the sequency 
+             #Clear the figure
+             f.clf()
+             #plt.close(f)
+             
+#Create two seconds worth of duplicate frames at the end of the sequency 
 print("Standard frames completed, duplicating final frame")
-for i in range(30):
+for i in range(framerate * 2):
      nsfn = "frame%04d.png" % (frame_count + i + 1)
      os.system('cp %s %s' % (rfn,merged_path + os.path.sep + nsfn))
 print("Generating video using FFMPEG...")
